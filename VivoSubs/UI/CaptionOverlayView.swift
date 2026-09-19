@@ -4,6 +4,8 @@ import Translation
 struct CaptionOverlayView: View {
     @Environment(CaptionController.self) private var controller
 
+    private let microphoneYellow = Color(red: 1, green: 0.84, blue: 0.22)
+
     var body: some View {
         @Bindable var controller = controller
 
@@ -28,11 +30,16 @@ struct CaptionOverlayView: View {
             .keyboardShortcut(.space, modifiers: [.command])
             .controlSize(.large)
 
-            AudioMeter(level: controller.audioLevel)
-                .frame(width: 72, height: 14)
+            VStack(alignment: .leading, spacing: 3) {
+                AudioMeter(level: controller.audioLevel, tint: .green)
+                if controller.transcribeMyVoice {
+                    AudioMeter(level: controller.microphoneLevel, tint: microphoneYellow)
+                }
+            }
+            .frame(width: 72)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(controller.status.label)
+                Text(controller.statusLabel)
                     .font(.callout)
                     .foregroundStyle(statusColor)
                     .lineLimit(2)
@@ -42,9 +49,22 @@ struct CaptionOverlayView: View {
                         .foregroundStyle(.orange)
                         .lineLimit(2)
                 }
+                if let hint = controller.microphoneHint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
+
+            Toggle("Mi voz", isOn: Binding(
+                get: { controller.transcribeMyVoice },
+                set: { controller.transcribeMyVoice = $0 }
+            ))
+            .toggleStyle(.checkbox)
+            .help("Activá esto con auriculares para transcribir lo que decís, en amarillo. Dejalo apagado si usás parlantes.")
 
             Toggle("Inglés", isOn: Binding(
                 get: { controller.showEnglish },
@@ -55,7 +75,7 @@ struct CaptionOverlayView: View {
             Button("Limpiar") {
                 controller.clearHistory()
             }
-            .disabled(controller.lines.isEmpty && controller.liveEnglish.isEmpty)
+            .disabled(controller.lines.isEmpty && !controller.hasLiveText)
         }
         .font(.system(.body, design: .rounded))
     }
@@ -65,21 +85,38 @@ struct CaptionOverlayView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(controller.lines) { line in
-                        captionRow(spanish: line.spanish, english: line.english, translating: line.isTranslating)
-                            .id(line.id)
+                        captionRow(
+                            spanish: line.spanish,
+                            english: line.english,
+                            source: line.source,
+                            translating: line.isTranslating
+                        )
+                        .id(line.id)
                     }
 
-                    if !controller.liveEnglish.isEmpty {
+                    if !controller.liveSystemEnglish.isEmpty {
                         captionRow(
-                            spanish: controller.liveEnglish,
-                            english: controller.liveEnglish,
+                            spanish: controller.liveSystemEnglish,
+                            english: controller.liveSystemEnglish,
+                            source: .system,
                             translating: true,
                             isLive: true
                         )
-                        .id("live")
+                        .id("live-system")
                     }
 
-                    if controller.lines.isEmpty && controller.liveEnglish.isEmpty {
+                    if !controller.liveMicrophoneEnglish.isEmpty {
+                        captionRow(
+                            spanish: controller.liveMicrophoneEnglish,
+                            english: controller.liveMicrophoneEnglish,
+                            source: .microphone,
+                            translating: true,
+                            isLive: true
+                        )
+                        .id("live-microphone")
+                    }
+
+                    if controller.lines.isEmpty && !controller.hasLiveText {
                         emptyState
                     }
                 }
@@ -88,7 +125,10 @@ struct CaptionOverlayView: View {
             .onChange(of: controller.lines.count) {
                 scrollToBottom(proxy)
             }
-            .onChange(of: controller.liveEnglish) {
+            .onChange(of: controller.liveSystemEnglish) {
+                scrollToBottom(proxy)
+            }
+            .onChange(of: controller.liveMicrophoneEnglish) {
                 scrollToBottom(proxy)
             }
         }
@@ -98,14 +138,17 @@ struct CaptionOverlayView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Subtítulos en español")
                 .font(.title2.weight(.semibold))
-            Text("Tocá Iniciar, concedé Grabación de pantalla y poné audio de una reunión. El atajo ⌘⇧H muestra u oculta esta ventana sin robar el foco.")
+            Text("Tocá Iniciar. El audio de la Mac se transcribe en blanco. Si tenés auriculares y querés verte a vos también, activá “Mi voz” (amarillo). Con parlantes, dejalo apagado. ⌘⇧H muestra u oculta esta ventana.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if showsPermissionHelp {
                 HStack {
-                    Button("Abrir permiso de pantalla") {
-                        controller.openScreenRecordingSettings()
+                    Button("Permiso de audio del sistema") {
+                        controller.openSystemAudioSettings()
+                    }
+                    Button("Permiso de micrófono") {
+                        controller.openMicrophoneSettings()
                     }
                     Button("Packs de traducción") {
                         controller.openTranslationSettings()
@@ -121,26 +164,40 @@ struct CaptionOverlayView: View {
     private func captionRow(
         spanish: String,
         english: String,
+        source: CaptionSource,
         translating: Bool,
         isLive: Bool = false
     ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(spanish.isEmpty ? "…" : spanish)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .foregroundStyle(isLive ? Color.primary.opacity(0.72) : Color.primary)
-                .textSelection(.enabled)
+        let isMic = source == .microphone
+        let textColor = isMic
+            ? microphoneYellow.opacity(isLive ? 0.78 : 1)
+            : Color.primary.opacity(isLive ? 0.72 : 1)
 
-            if controller.showEnglish {
-                Text(english)
-                    .font(.system(size: 13, weight: .regular, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+        return HStack(alignment: .top, spacing: 8) {
+            if isMic {
+                Capsule()
+                    .fill(microphoneYellow)
+                    .frame(width: 4)
             }
 
-            if translating && !isLive {
-                Text("Traduciendo…")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(spanish.isEmpty ? "…" : spanish)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .foregroundStyle(textColor)
+                    .textSelection(.enabled)
+
+                if controller.showEnglish {
+                    Text(english)
+                        .font(.system(size: 13, weight: .regular, design: .rounded))
+                        .foregroundStyle(isMic ? microphoneYellow.opacity(0.7) : Color.secondary)
+                        .textSelection(.enabled)
+                }
+
+                if translating && !isLive {
+                    Text("Traduciendo…")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -167,8 +224,10 @@ struct CaptionOverlayView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.15)) {
-                if !controller.liveEnglish.isEmpty {
-                    proxy.scrollTo("live", anchor: .bottom)
+                if !controller.liveMicrophoneEnglish.isEmpty {
+                    proxy.scrollTo("live-microphone", anchor: .bottom)
+                } else if !controller.liveSystemEnglish.isEmpty {
+                    proxy.scrollTo("live-system", anchor: .bottom)
                 } else if let last = controller.lines.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
@@ -179,13 +238,14 @@ struct CaptionOverlayView: View {
 
 struct AudioMeter: View {
     let level: Float
+    var tint: Color = .green
 
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<5, id: \.self) { index in
                 Capsule()
-                    .fill(level > Float(index) / 5 ? Color.green.opacity(0.9) : Color.secondary.opacity(0.25))
-                    .frame(width: 8)
+                    .fill(level > Float(index) / 5 ? tint.opacity(0.9) : Color.secondary.opacity(0.25))
+                    .frame(width: 8, height: 6)
             }
         }
         .animation(.easeOut(duration: 0.08), value: level)

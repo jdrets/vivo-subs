@@ -14,18 +14,37 @@ final class CaptionController {
 
     private(set) var status: SessionStatus = .idle
     private(set) var lines: [CaptionLine] = []
-    private(set) var liveEnglish: String = ""
+    private(set) var liveSystemEnglish: String = ""
+    private(set) var liveMicrophoneEnglish: String = ""
     private(set) var audioLevel: Float = 0
+    private(set) var microphoneLevel: Float = 0
     private(set) var isRunning = false
+    private(set) var microphoneEnabled = false
     private(set) var translationHint: String?
+    private(set) var microphoneHint: String?
     var showEnglish = true
+    var transcribeMyVoice: Bool {
+        didSet {
+            UserDefaults.standard.set(transcribeMyVoice, forKey: "transcribeMyVoice")
+            Task { await applyMicrophonePreference() }
+        }
+    }
 
     private let capture = SystemAudioCapture()
-    private let transcriberEngine = LiveTranscriber()
+    private let microphoneCapture = MicrophoneCapture()
+    private let systemTranscriber = LiveTranscriber()
+    private let microphoneTranscriber = LiveTranscriber()
     private var overlay: OverlayPanelController?
     private var pipelineTask: Task<Void, Never>?
+    private var microphoneListenTask: Task<Void, Never>?
     private var runID = UUID()
     private let maxLines = 40
+    private var sessionLocale: Locale?
+    private var sessionFormat: AVAudioFormat?
+
+    private init() {
+        transcribeMyVoice = UserDefaults.standard.bool(forKey: "transcribeMyVoice")
+    }
 
     var translationConfiguration: TranslationSession.Configuration {
         translationHub.configuration
@@ -33,6 +52,13 @@ final class CaptionController {
 
     var canStart: Bool { !isRunning }
     var overlayVisible: Bool { overlay?.isVisible == true }
+    var hasLiveText: Bool { !liveSystemEnglish.isEmpty || !liveMicrophoneEnglish.isEmpty }
+    var statusLabel: String {
+        if case .listening = status {
+            return microphoneEnabled ? "Escuchando sistema y micrófono" : "Escuchando audio del sistema"
+        }
+        return status.label
+    }
 
     func attachOverlay(_ overlay: OverlayPanelController) {
         self.overlay = overlay
@@ -59,7 +85,10 @@ final class CaptionController {
         isRunning = true
         status = .starting
         translationHint = nil
-        liveEnglish = ""
+        microphoneHint = nil
+        microphoneEnabled = false
+        liveSystemEnglish = ""
+        liveMicrophoneEnglish = ""
         pipelineTask?.cancel()
         let id = UUID()
         runID = id
@@ -71,12 +100,14 @@ final class CaptionController {
         pipelineTask?.cancel()
         pipelineTask = nil
         Task {
-            await transcriberEngine.stop()
-            try? await capture.stop()
+            await teardownCapture()
         }
         isRunning = false
-        liveEnglish = ""
+        liveSystemEnglish = ""
+        liveMicrophoneEnglish = ""
         audioLevel = 0
+        microphoneLevel = 0
+        microphoneEnabled = false
         if case .error = status {
             return
         }
@@ -85,11 +116,16 @@ final class CaptionController {
 
     func clearHistory() {
         lines.removeAll()
-        liveEnglish = ""
+        liveSystemEnglish = ""
+        liveMicrophoneEnglish = ""
     }
 
-    func openScreenRecordingSettings() {
-        NSWorkspace.shared.open(SystemSettingsURL.screenRecording)
+    func openSystemAudioSettings() {
+        NSWorkspace.shared.open(SystemSettingsURL.systemAudio)
+    }
+
+    func openMicrophoneSettings() {
+        NSWorkspace.shared.open(SystemSettingsURL.microphone)
     }
 
     func openTranslationSettings() {
@@ -115,20 +151,32 @@ final class CaptionController {
             }
 
             status = .downloadingSpeech
-            let prepared = try await transcriberEngine.prepareEnglish()
+            let prepared = try await SpeechSession.prepareEnglish()
+            sessionLocale = prepared.locale
+            sessionFormat = prepared.format
 
             status = .starting
-            let audio = try await capture.start(preferredFormat: prepared.format)
-            try await transcriberEngine.start(
-                transcriber: prepared.transcriber,
+            let systemAudio = try await capture.start(preferredFormat: prepared.format)
+            try await systemTranscriber.start(
+                locale: prepared.locale,
                 format: prepared.format,
-                audio: meter(audio)
+                audio: meter(systemAudio, source: .system)
             )
 
             status = .listening
-            for try await event in transcriberEngine.events(from: prepared.transcriber) {
-                try Task.checkCancellation()
-                handle(event)
+            if transcribeMyVoice {
+                await enableMicrophoneIfNeeded()
+            }
+
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                let system = systemTranscriber
+                group.addTask {
+                    for try await event in system.events() {
+                        try Task.checkCancellation()
+                        await self.handle(event, source: .system)
+                    }
+                }
+                try await group.waitForAll()
             }
         } catch is CancellationError {
             if runID == id { status = .idle }
@@ -139,19 +187,130 @@ final class CaptionController {
         }
 
         if runID == id {
-            await transcriberEngine.stop()
-            try? await capture.stop()
+            await teardownCapture()
             isRunning = false
             audioLevel = 0
-            liveEnglish = ""
+            microphoneLevel = 0
+            liveSystemEnglish = ""
+            liveMicrophoneEnglish = ""
+            sessionLocale = nil
+            sessionFormat = nil
         }
     }
 
-    private func meter(_ audio: AsyncStream<SendablePCMBuffer>) -> AsyncStream<SendablePCMBuffer> {
+    private func applyMicrophonePreference() async {
+        guard isRunning else { return }
+        if transcribeMyVoice {
+            await enableMicrophoneIfNeeded()
+        } else {
+            await disableMicrophone()
+        }
+    }
+
+    private func enableMicrophoneIfNeeded() async {
+        guard transcribeMyVoice, isRunning, !microphoneEnabled else { return }
+        guard let locale = sessionLocale, let format = sessionFormat else { return }
+
+        let allowed = await MediaPermissions.requestMicrophone()
+        guard transcribeMyVoice, isRunning else { return }
+        guard allowed else {
+            microphoneHint = CaptionError.microphoneDenied.localizedDescription
+            return
+        }
+
+        microphoneHint = nil
+        guard let microphoneAudio = await startMicrophone(format: format) else { return }
+        guard transcribeMyVoice, isRunning else {
+            microphoneCapture.stop()
+            return
+        }
+
+        do {
+            try await microphoneTranscriber.start(
+                locale: locale,
+                format: format,
+                audio: meter(microphoneAudio, source: .microphone)
+            )
+        } catch {
+            microphoneHint = error.localizedDescription
+            microphoneCapture.stop()
+            return
+        }
+
+        guard transcribeMyVoice, isRunning else {
+            await microphoneTranscriber.stop()
+            microphoneCapture.stop()
+            return
+        }
+
+        microphoneEnabled = true
+        let microphone = microphoneTranscriber
+        microphoneListenTask = Task.detached {
+            do {
+                for try await event in microphone.events() {
+                    try Task.checkCancellation()
+                    await self.handle(event, source: .microphone)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    self.microphoneHint = error.localizedDescription
+                    self.microphoneEnabled = false
+                }
+            }
+        }
+    }
+
+    private func disableMicrophone() async {
+        microphoneListenTask?.cancel()
+        microphoneListenTask = nil
+        await microphoneTranscriber.stop()
+        microphoneCapture.stop()
+        microphoneEnabled = false
+        liveMicrophoneEnglish = ""
+        microphoneLevel = 0
+        microphoneHint = nil
+    }
+
+    private func startMicrophone(format: AVAudioFormat) async -> AsyncStream<SendablePCMBuffer>? {
+        do {
+            return try await microphoneCapture.start(preferredFormat: format)
+        } catch let error as CaptionError {
+            microphoneHint = error.localizedDescription
+            return nil
+        } catch {
+            microphoneHint = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func teardownCapture() async {
+        microphoneListenTask?.cancel()
+        microphoneListenTask = nil
+        await systemTranscriber.stop()
+        await microphoneTranscriber.stop()
+        microphoneCapture.stop()
+        try? await capture.stop()
+        await SpeechSession.release()
+        sessionLocale = nil
+        sessionFormat = nil
+    }
+
+    private func meter(
+        _ audio: AsyncStream<SendablePCMBuffer>,
+        source: CaptionSource
+    ) -> AsyncStream<SendablePCMBuffer> {
         AsyncStream(bufferingPolicy: .bufferingNewest(12)) { continuation in
             let task = Task { @MainActor in
                 for await chunk in audio {
-                    audioLevel = PCMBuffer.rmsLevel(chunk.buffer)
+                    let level = PCMBuffer.rmsLevel(chunk.buffer)
+                    switch source {
+                    case .system:
+                        audioLevel = level
+                    case .microphone:
+                        microphoneLevel = level
+                    }
                     continuation.yield(chunk)
                 }
                 continuation.finish()
@@ -162,21 +321,31 @@ final class CaptionController {
         }
     }
 
-    private func handle(_ event: TranscriptEvent) {
+    private func handle(_ event: TranscriptEvent, source: CaptionSource) {
         if event.isFinal {
-            liveEnglish = ""
-            enqueueFinal(event.text)
+            switch source {
+            case .system:
+                liveSystemEnglish = ""
+            case .microphone:
+                liveMicrophoneEnglish = ""
+            }
+            enqueueFinal(event.text, source: source)
         } else {
-            liveEnglish = event.text
+            switch source {
+            case .system:
+                liveSystemEnglish = event.text
+            case .microphone:
+                liveMicrophoneEnglish = event.text
+            }
         }
     }
 
-    private func enqueueFinal(_ english: String) {
-        if lines.last?.english == english {
+    private func enqueueFinal(_ english: String, source: CaptionSource) {
+        if lines.last(where: { $0.source == source })?.english == english {
             return
         }
 
-        let line = CaptionLine(english: english)
+        let line = CaptionLine(source: source, english: english)
         lines.append(line)
         if lines.count > maxLines {
             lines.removeFirst(lines.count - maxLines)

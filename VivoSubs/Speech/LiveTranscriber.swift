@@ -10,54 +10,26 @@ struct TranscriptEvent: Sendable {
 final class LiveTranscriber: @unchecked Sendable {
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
-    private var reservedLocale: Locale?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
 
-    func prepareEnglish() async throws -> (transcriber: SpeechTranscriber, format: AVAudioFormat) {
-        guard SpeechTranscriber.isAvailable else {
-            throw CaptionError.speechUnavailable
-        }
-
-        let locale = try await Self.resolveEnglishLocale()
-        let transcriber = SpeechTranscriber(
-            locale: locale,
-            transcriptionOptions: [.etiquetteReplacements],
-            reportingOptions: [.volatileResults, .fastResults],
-            attributeOptions: [.audioTimeRange]
-        )
-
-        let status = await AssetInventory.status(forModules: [transcriber])
-        if status != .installed {
-            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                try await request.downloadAndInstall()
-            } else if status == .unsupported {
-                throw CaptionError.englishLocaleUnsupported
-            }
-        }
-
-        _ = try await AssetInventory.reserve(locale: locale)
-        reservedLocale = locale
-
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
-            throw CaptionError.speechUnavailable
-        }
-
-        self.transcriber = transcriber
-        return (transcriber, format)
-    }
-
     func start(
-        transcriber: SpeechTranscriber,
+        locale: Locale,
         format: AVAudioFormat,
         audio: AsyncStream<SendablePCMBuffer>
     ) async throws {
+        let transcriber = SpeechSession.makeTranscriber(locale: locale)
+        self.transcriber = transcriber
+
         let (inputSequence, builder) = AsyncStream.makeStream(
             of: AnalyzerInput.self,
             bufferingPolicy: .bufferingNewest(8)
         )
         inputBuilder = builder
 
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let analyzer = SpeechAnalyzer(
+            modules: [transcriber],
+            options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .processLifetime)
+        )
         try await analyzer.prepareToAnalyze(in: format)
         self.analyzer = analyzer
         try await analyzer.start(inputSequence: inputSequence)
@@ -86,8 +58,13 @@ final class LiveTranscriber: @unchecked Sendable {
         }
     }
 
-    func events(from transcriber: SpeechTranscriber) -> AsyncThrowingStream<TranscriptEvent, Error> {
+    func events() -> AsyncThrowingStream<TranscriptEvent, Error> {
         AsyncThrowingStream { continuation in
+            guard let transcriber else {
+                continuation.finish()
+                return
+            }
+
             let task = Task {
                 do {
                     for try await result in transcriber.results {
@@ -115,23 +92,5 @@ final class LiveTranscriber: @unchecked Sendable {
         }
         analyzer = nil
         transcriber = nil
-        if let reservedLocale {
-            _ = await AssetInventory.release(reservedLocale: reservedLocale)
-        }
-        reservedLocale = nil
-    }
-
-    private static func resolveEnglishLocale() async throws -> Locale {
-        let preferred = Locale(identifier: "en-US")
-        if let match = await SpeechTranscriber.supportedLocale(equivalentTo: preferred) {
-            return match
-        }
-
-        let supported = await SpeechTranscriber.supportedLocales
-        if let english = supported.first(where: { $0.identifier.lowercased().hasPrefix("en") }) {
-            return english
-        }
-
-        throw CaptionError.englishLocaleUnsupported
     }
 }

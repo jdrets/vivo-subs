@@ -15,6 +15,11 @@ struct MenuBarContent: View {
         }
         .keyboardShortcut("h", modifiers: [.command, .shift])
 
+        Toggle("Transcribir mi voz", isOn: Binding(
+            get: { controller.transcribeMyVoice },
+            set: { controller.transcribeMyVoice = $0 }
+        ))
+
         Toggle("Mostrar inglés original", isOn: Binding(
             get: { controller.showEnglish },
             set: { controller.showEnglish = $0 }
@@ -22,8 +27,12 @@ struct MenuBarContent: View {
 
         Divider()
 
-        Button("Abrir permiso de pantalla…") {
-            controller.openScreenRecordingSettings()
+        Button("Abrir permiso de audio del sistema…") {
+            controller.openSystemAudioSettings()
+        }
+
+        Button("Abrir permiso de micrófono…") {
+            controller.openMicrophoneSettings()
         }
 
         Button("Abrir packs de traducción…") {

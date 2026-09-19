@@ -3,11 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>Vivo Subs captura el audio que reproduce la Mac para transcribir reuniones y videos en vivo.</string>
+	<string>Vivo Subs captura el audio que reproduce la Mac (Zoom, Meet, Teams) para transcribirlo a español. No graba la pantalla.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Vivo Subs no usa el micrófono; este texto cumple requisitos del sistema de audio.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>Vivo Subs necesita permiso de grabación de pantalla para escuchar el audio del sistema (Zoom, Meet, Teams) y mostrar subtítulos en español.</string>
+	<string>Vivo Subs usa el micrófono para transcribir lo que decís y mostrarlo en amarillo, separado del audio de la reunión.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Vivo Subs transcribe el inglés en el dispositivo para traducirlo a español.</string>
 </dict>
