@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Vivo Subs captura el audio que reproduce la Mac para transcribir reuniones y videos en vivo.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Vivo Subs no usa el micrófono; este texto cumple requisitos del sistema de audio.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Vivo Subs necesita permiso de grabación de pantalla para escuchar el audio del sistema (Zoom, Meet, Teams) y mostrar subtítulos en español.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Vivo Subs transcribe el inglés en el dispositivo para traducirlo a español.</string>
+</dict>
+</plist>
