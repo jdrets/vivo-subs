@@ -19,10 +19,18 @@ final class CaptionController {
     private(set) var audioLevel: Float = 0
     private(set) var microphoneLevel: Float = 0
     private(set) var isRunning = false
+    private(set) var systemAudioEnabled = false
     private(set) var microphoneEnabled = false
     private(set) var translationHint: String?
+    private(set) var systemAudioHint: String?
     private(set) var microphoneHint: String?
     var showEnglish = true
+    var transcribeSystemAudio: Bool {
+        didSet {
+            UserDefaults.standard.set(transcribeSystemAudio, forKey: "transcribeSystemAudio")
+            Task { await applySystemAudioPreference() }
+        }
+    }
     var transcribeMyVoice: Bool {
         didSet {
             UserDefaults.standard.set(transcribeMyVoice, forKey: "transcribeMyVoice")
@@ -36,6 +44,7 @@ final class CaptionController {
     private let microphoneTranscriber = LiveTranscriber()
     private var overlay: OverlayPanelController?
     private var pipelineTask: Task<Void, Never>?
+    private var systemListenTask: Task<Void, Never>?
     private var microphoneListenTask: Task<Void, Never>?
     private var runID = UUID()
     private let maxLines = 40
@@ -43,6 +52,11 @@ final class CaptionController {
     private var sessionFormat: AVAudioFormat?
 
     private init() {
+        if let stored = UserDefaults.standard.object(forKey: "transcribeSystemAudio") as? Bool {
+            transcribeSystemAudio = stored
+        } else {
+            transcribeSystemAudio = true
+        }
         transcribeMyVoice = UserDefaults.standard.bool(forKey: "transcribeMyVoice")
     }
 
@@ -55,7 +69,18 @@ final class CaptionController {
     var hasLiveText: Bool { !liveSystemEnglish.isEmpty || !liveMicrophoneEnglish.isEmpty }
     var statusLabel: String {
         if case .listening = status {
-            return microphoneEnabled ? "Escuchando sistema y micrófono" : "Escuchando audio del sistema"
+            switch (systemAudioEnabled, microphoneEnabled) {
+            case (true, true):
+                return "Escuchando sistema y micrófono"
+            case (true, false):
+                return "Escuchando audio del sistema"
+            case (false, true):
+                return "Escuchando micrófono"
+            case (false, false):
+                return transcribeSystemAudio || transcribeMyVoice
+                    ? "Sin audio todavía"
+                    : "Activá Audio o Mi voz"
+            }
         }
         return status.label
     }
@@ -85,7 +110,9 @@ final class CaptionController {
         isRunning = true
         status = .starting
         translationHint = nil
+        systemAudioHint = nil
         microphoneHint = nil
+        systemAudioEnabled = false
         microphoneEnabled = false
         liveSystemEnglish = ""
         liveMicrophoneEnglish = ""
@@ -107,6 +134,7 @@ final class CaptionController {
         liveMicrophoneEnglish = ""
         audioLevel = 0
         microphoneLevel = 0
+        systemAudioEnabled = false
         microphoneEnabled = false
         if case .error = status {
             return
@@ -155,28 +183,16 @@ final class CaptionController {
             sessionLocale = prepared.locale
             sessionFormat = prepared.format
 
-            status = .starting
-            let systemAudio = try await capture.start(preferredFormat: prepared.format)
-            try await systemTranscriber.start(
-                locale: prepared.locale,
-                format: prepared.format,
-                audio: meter(systemAudio, source: .system)
-            )
-
             status = .listening
+            if transcribeSystemAudio {
+                await enableSystemAudioIfNeeded()
+            }
             if transcribeMyVoice {
                 await enableMicrophoneIfNeeded()
             }
 
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                let system = systemTranscriber
-                group.addTask {
-                    for try await event in system.events() {
-                        try Task.checkCancellation()
-                        await self.handle(event, source: .system)
-                    }
-                }
-                try await group.waitForAll()
+            while !Task.isCancelled {
+                try await Task.sleep(for: .seconds(3_600))
             }
         } catch is CancellationError {
             if runID == id { status = .idle }
@@ -198,6 +214,15 @@ final class CaptionController {
         }
     }
 
+    private func applySystemAudioPreference() async {
+        guard isRunning else { return }
+        if transcribeSystemAudio {
+            await enableSystemAudioIfNeeded()
+        } else {
+            await disableSystemAudio()
+        }
+    }
+
     private func applyMicrophonePreference() async {
         guard isRunning else { return }
         if transcribeMyVoice {
@@ -205,6 +230,77 @@ final class CaptionController {
         } else {
             await disableMicrophone()
         }
+    }
+
+    private func enableSystemAudioIfNeeded() async {
+        guard transcribeSystemAudio, isRunning, !systemAudioEnabled else { return }
+        guard let locale = sessionLocale, let format = sessionFormat else { return }
+
+        let systemAudio: AsyncStream<SendablePCMBuffer>
+        do {
+            systemAudio = try await capture.start(preferredFormat: format)
+        } catch let error as CaptionError {
+            guard transcribeSystemAudio, isRunning else { return }
+            systemAudioHint = error.localizedDescription
+            return
+        } catch {
+            guard transcribeSystemAudio, isRunning else { return }
+            systemAudioHint = error.localizedDescription
+            return
+        }
+
+        guard transcribeSystemAudio, isRunning else {
+            try? await capture.stop()
+            return
+        }
+
+        do {
+            try await systemTranscriber.start(
+                locale: locale,
+                format: format,
+                audio: meter(systemAudio, source: .system)
+            )
+        } catch {
+            systemAudioHint = error.localizedDescription
+            try? await capture.stop()
+            return
+        }
+
+        guard transcribeSystemAudio, isRunning else {
+            await systemTranscriber.stop()
+            try? await capture.stop()
+            return
+        }
+
+        systemAudioHint = nil
+        systemAudioEnabled = true
+        let system = systemTranscriber
+        systemListenTask = Task.detached {
+            do {
+                for try await event in system.events() {
+                    try Task.checkCancellation()
+                    await self.handle(event, source: .system)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    self.systemAudioHint = error.localizedDescription
+                    self.systemAudioEnabled = false
+                }
+            }
+        }
+    }
+
+    private func disableSystemAudio() async {
+        systemListenTask?.cancel()
+        systemListenTask = nil
+        await systemTranscriber.stop()
+        try? await capture.stop()
+        systemAudioEnabled = false
+        liveSystemEnglish = ""
+        audioLevel = 0
+        systemAudioHint = nil
     }
 
     private func enableMicrophoneIfNeeded() async {
@@ -286,6 +382,8 @@ final class CaptionController {
     }
 
     private func teardownCapture() async {
+        systemListenTask?.cancel()
+        systemListenTask = nil
         microphoneListenTask?.cancel()
         microphoneListenTask = nil
         await systemTranscriber.stop()
@@ -351,9 +449,14 @@ final class CaptionController {
             lines.removeFirst(lines.count - maxLines)
         }
 
+        let context = lines
+            .filter { $0.source == source && $0.id != line.id }
+            .suffix(2)
+            .map(\.english)
+
         Task { [translationHub] in
             do {
-                let spanish = try await translationHub.translate(english)
+                let spanish = try await translationHub.translate(english, previous: Array(context))
                 if let index = lines.firstIndex(where: { $0.id == line.id }) {
                     lines[index].spanish = spanish
                     lines[index].isTranslating = false

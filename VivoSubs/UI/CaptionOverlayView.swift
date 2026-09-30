@@ -15,7 +15,7 @@ struct CaptionOverlayView: View {
             captionList
         }
         .padding(16)
-        .frame(minWidth: 560, minHeight: 220)
+        .frame(minWidth: 620, minHeight: 220)
         .background(.ultraThinMaterial)
         .translationTask(controller.translationConfiguration) { session in
             await controller.attachTranslationSession(session)
@@ -30,13 +30,17 @@ struct CaptionOverlayView: View {
             .keyboardShortcut(.space, modifiers: [.command])
             .controlSize(.large)
 
-            VStack(alignment: .leading, spacing: 3) {
-                AudioMeter(level: controller.audioLevel, tint: .green)
-                if controller.transcribeMyVoice {
-                    AudioMeter(level: controller.microphoneLevel, tint: microphoneYellow)
+            if controller.transcribeSystemAudio || controller.transcribeMyVoice {
+                VStack(alignment: .leading, spacing: 3) {
+                    if controller.transcribeSystemAudio {
+                        AudioMeter(level: controller.audioLevel, tint: .green)
+                    }
+                    if controller.transcribeMyVoice {
+                        AudioMeter(level: controller.microphoneLevel, tint: microphoneYellow)
+                    }
                 }
+                .frame(width: 72)
             }
-            .frame(width: 72)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(controller.statusLabel)
@@ -44,6 +48,12 @@ struct CaptionOverlayView: View {
                     .foregroundStyle(statusColor)
                     .lineLimit(2)
                 if let hint = controller.translationHint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+                if let hint = controller.systemAudioHint {
                     Text(hint)
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -58,6 +68,13 @@ struct CaptionOverlayView: View {
             }
 
             Spacer()
+
+            Toggle("Audio", isOn: Binding(
+                get: { controller.transcribeSystemAudio },
+                set: { controller.transcribeSystemAudio = $0 }
+            ))
+            .toggleStyle(.checkbox)
+            .help("Lo que suena en la Mac (Zoom, Meet, YouTube). Dejalo apagado si solo querés transcribir tu micrófono.")
 
             Toggle("Mi voz", isOn: Binding(
                 get: { controller.transcribeMyVoice },
@@ -138,7 +155,7 @@ struct CaptionOverlayView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Subtítulos en español")
                 .font(.title2.weight(.semibold))
-            Text("Tocá Iniciar. El audio de la Mac se transcribe en blanco. Si tenés auriculares y querés verte a vos también, activá “Mi voz” (amarillo). Con parlantes, dejalo apagado. ⌘⇧H muestra u oculta esta ventana.")
+            Text("Tocá Iniciar. “Audio” transcribe lo que suena en la Mac (blanco). “Mi voz” transcribe lo que decís (amarillo). Podés usar uno, el otro, o los dos. ⌘⇧H muestra u oculta esta ventana.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

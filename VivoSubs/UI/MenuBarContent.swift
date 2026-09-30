@@ -15,6 +15,11 @@ struct MenuBarContent: View {
         }
         .keyboardShortcut("h", modifiers: [.command, .shift])
 
+        Toggle("Transcribir audio", isOn: Binding(
+            get: { controller.transcribeSystemAudio },
+            set: { controller.transcribeSystemAudio = $0 }
+        ))
+
         Toggle("Transcribir mi voz", isOn: Binding(
             get: { controller.transcribeMyVoice },
             set: { controller.transcribeMyVoice = $0 }
