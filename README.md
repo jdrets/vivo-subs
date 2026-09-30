@@ -1,62 +1,55 @@
 # Vivo Subs
 
-Subtítulos en vivo, en español, de lo que se dice en inglés. Corre en la Mac, sin mandar el audio a ningún servidor y sin síntesis de voz: solo texto.
+Subtítulos en vivo para cuando hablás en inglés con gente de Estados Unidos. Escucha la reunión (o tu micrófono), transcribe en inglés y muestra el español en una ventana que queda flotando encima de Zoom, Meet o Teams.
 
-Está pensado para seguir una reunión rápida en inglés de Estados Unidos (Zoom, Meet, Teams) o para transcribir lo que decís vos.
+Todo pasa en la Mac. El audio no sale de la computadora y la app no habla: solo escribe.
 
-## Cómo funciona
+## Qué ves
 
-Hay dos canales separados. No se mezclan.
+Hay dos fuentes, y cada una se puede prender o apagar sola.
 
-| Canal | De dónde sale | Cómo se ve |
-| --- | --- | --- |
-| Audio | Lo que reproduce la Mac | Texto blanco, medidor verde |
-| Mi voz | El micrófono | Texto amarillo, medidor amarillo |
+- **Audio** es lo que suena en la Mac: la otra persona en la call, un video, lo que sea. Sale en blanco, con un medidor verde.
+- **Mi voz** es tu micrófono. Sale en amarillo, con un medidor amarillo.
 
-Podés dejar uno, el otro, o los dos. Si no tenés auriculares, dejá **Mi voz** apagado: los parlantes se cuelan en el micrófono y la app no intenta “limpiar” ese eco, porque eso bajaba el volumen del sistema.
+Para una reunión con parlantes, dejá **Mi voz** apagado. El micrófono también escucha los parlantes, y si los dos canales están activos vas a ver la misma frase dos veces. Con auriculares no pasa.
 
-El camino de cada frase es este:
+Si solo querés practicar o dictar, apagá **Audio** y dejá **Mi voz**.
 
-1. **Captura.** El audio de la Mac entra por un process tap de Core Audio (permiso *System Audio Recording Only*, no grabación de pantalla). El micrófono entra por `AVAudioEngine`, aparte.
-2. **Transcripción.** Cada canal tiene su propio `SpeechTranscriber` en inglés de Estados Unidos (`en-US`), on-device, con resultados parciales.
-3. **Traducción.** Cuando una frase se cierra, `TranslationSession` la pasa de inglés a español en el dispositivo. Manda también hasta dos frases anteriores **del mismo canal**, para que pronombres y respuestas cortas (*it*, *that*, *yeah*, *right*) no se traduzcan sueltas. Si no se puede recortar bien el español, se traduce solo esa frase.
-4. **Ventana.** Los subtítulos flotan encima de las demás apps sin robar el foco.
+Mientras la frase todavía se está armando, el texto de abajo es provisorio. Cuando la persona termina de hablar, esa línea queda fija y aparece la traducción.
 
-## Uso
+## Cómo traduce
 
-La app vive en la barra de menú.
+Traduce cada frase al cerrarse, no palabra por palabra. Para no perder el hilo (*it*, *that*, *yeah*, *right*), le pasa también las dos frases anteriores de ese mismo canal. El audio de la reunión y tu voz no se mezclan en esa traducción.
 
-- **Iniciar / Detener** arranca o corta la sesión.
-- **Audio** transcribe lo que suena en la Mac.
-- **Mi voz** transcribe el micrófono. Conviene usarlo con auriculares.
+El inglés que reconoce es el de Estados Unidos.
+
+## Cómo se usa
+
+Vivo Subs queda en la barra de menú.
+
+- **Iniciar** y **Detener** prenden o cortan la escucha.
+- **Audio** y **Mi voz** eligen qué se transcribe. Se pueden cambiar en medio de una sesión y la app recuerda la elección.
 - **Inglés** muestra el original debajo del español.
-- **⌘⇧H** muestra u oculta la ventana.
-- **Limpiar** borra el historial.
+- **⌘⇧H** muestra u oculta la ventana. La ventana no le roba el foco a la reunión.
+- **Limpiar** borra lo que ya se escribió.
 
-Los dos checkboxes se pueden cambiar con la sesión andando y quedan guardados.
-
-La primera vez macOS pide:
-
-- **Micrófono**, solo si activás Mi voz.
-- **Audio del sistema** (*Screen & System Audio Recording → System Audio Recording Only*). No hace falta grabación de pantalla.
-- El **pack de traducción inglés → español**, si todavía no está instalado. La app avisa y abre Ajustes.
+La primera vez, macOS pide permiso. El micrófono solo si activás **Mi voz**. El audio de la Mac está en Ajustes → Privacidad → Screen & System Audio Recording, en la sección **System Audio Recording Only**. No pide grabar la pantalla. Si falta el pack de traducción inglés → español, la app lo dice y abre Ajustes.
 
 ## Requisitos
 
 - Mac con Apple silicon
 - macOS 26 o posterior
-- Xcode con el SDK de macOS 26
 
-La transcripción y la traducción usan los modelos de Apple que ya vienen (o se descargan) en el sistema. No hay API key.
+Usa los modelos de transcripción y traducción de Apple. No hace falta una API key.
 
 ## Compilar
 
-Abrí `VivoSubs.xcodeproj` y corré el scheme **VivoSubs**, o desde la terminal:
+Abrí `VivoSubs.xcodeproj` en Xcode y corré el scheme **VivoSubs**. Desde la terminal:
 
 ```bash
 xcodebuild -project VivoSubs.xcodeproj -scheme VivoSubs -configuration Release CODE_SIGN_IDENTITY="-"
 ```
 
-El producto queda en DerivedData como `VivoSubs.app`. La firma es ad hoc: cada rebuild puede volver a pedir permisos de micrófono y de audio del sistema.
+Eso genera `VivoSubs.app`. La firma es ad hoc, así que después de recompilar macOS puede volver a pedir los permisos.
 
-El sandbox está desactivado a propósito. El process tap de Core Audio no funciona dentro del sandbox de la App Store.
+El sandbox está apagado. Si estuviera activo, la app no podría escuchar el audio del sistema.
